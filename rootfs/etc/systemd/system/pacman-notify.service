@@ -1,0 +1,6 @@
+[Unit]
+Description=Send desktop notifications related to pacman
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pacman-notify

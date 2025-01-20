@@ -1,0 +1,144 @@
+# Basic system tools
+base
+base-devel
+
+# Kernel related
+linux-hardened
+linux-hardened-headers
+linux-lts
+linux-firmware
+mkinitcpio
+
+# Filesystem tools
+btrfs-progs
+gparted
+gptfdisk
+dosfstools # create FAT partitions
+
+# Secure boot
+efibootmgr
+efitools
+sbsigntools
+edk2-shell # useful EFI shell in case things go wrong
+
+# Networking
+iwd
+iptables-nft # includes nftables as a dependency, will automatically uninstall iptables
+firefox
+wget
+dnsmasq # used by libvirtd
+glider # HTTP proxy used for the network opt-in security measure
+socat # used to relay SSH through the HTTP proxy
+
+# Security
+apparmor
+firejail
+xdg-dbus-proxy # Used by firejail to enforce DBUS policies
+polkit
+keepassxc
+
+# Backup
+restic
+syncthing
+
+# Virtualization/Containerization
+docker
+docker-compose
+qemu-full
+virt-manager
+
+# Monitoring
+audit # Log system failures and important security events
+fwupd # Hardware firmware updates manager
+dunst # Notification daemon
+htop
+iotop
+lsof
+nvtop # htop equivalent for GPUs
+
+# Desktop environment
+sway
+swaylock
+swayidle
+swaybg
+kanshi # Monitors management
+xdg-desktop-portal-wlr # Enable screen sharing capabilites
+xdg-desktop-portal-gtk # File chooser and others
+flameshot # Take screenshots
+grim # flameshot dependency for Wayland
+wezterm # Terminal emulator
+wl-clipboard
+bemenu-wayland
+python-i3ipc # Interact with Sway using Python
+python-psutil # status-bar requirement
+libnotify # notify-send
+qt5-wayland
+qt6-wayland
+slurp # Select monitor region
+brightnessctl # Control monitor brightness
+gammastep # decrease blue light during the night
+playerctl # control various media players
+
+# Basic services
+pipewire
+pipewire-audio
+pipewire-alsa
+pipewire-jack
+pipewire-pulse
+wireplumber
+openssh
+dbus-broker # Improved DBUS implementation (performance and security)
+
+# Fonts
+ttf-fantasque-nerd
+noto-fonts-emoji
+terminus-font # TTY font
+
+# Themes
+arc-gtk-theme
+papirus-icon-theme
+
+# Dev
+neovim
+git
+lazygit
+rustup
+rust-analyzer
+clang
+ipython
+python-pip
+man-db
+man-pages
+npm # for nvim plugins
+
+# Debugging
+gdb
+pwndbg
+strace
+
+# File viewers/editors
+zathura
+zathura-pdf-poppler
+swayimg
+mpv
+gimp
+imagemagick
+tree
+fzf
+
+# CLI
+zsh
+dash
+dialog
+ripgrep
+bat
+
+# Other
+most
+p7zip
+unzip
+debootstrap # see docs/HOW_TO_SECURE_USB_DEVICE.md
+signal-desktop
+usbutils
+wtype
+dmidecode # used by libvirtd

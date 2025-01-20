@@ -1,0 +1,9 @@
+[Unit]
+Description=Cache upgradable packages in the background but do not install them
+After=network.target systemd-networkd-wait-online.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/proxify /usr/bin/pacman -Syuw --noconfirm
+Restart=on-failure
+RestartSec=10s

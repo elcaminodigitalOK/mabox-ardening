@@ -1,0 +1,7 @@
+# For the SSH integration
+noblacklist ${HOME}/.ssh
+ignore private-tmp
+noblacklist /tmp/ssh-*
+
+# libsecret integration
+dbus-user.own org.freedesktop.secrets

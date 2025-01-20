@@ -1,0 +1,305 @@
+#!/usr/bin/python3 -u
+
+# ruff: noqa: E501,PTH123,PTH116,SIM115
+
+"""Script that monitors auditd logs to send relevant Desktop notifications.
+
+Inspired by AppArmor's aa-notify.
+See: https://gitlab.com/apparmor/apparmor/-/blob/master/utils/aa-notify
+"""
+
+import json
+import os
+import re
+import sys
+import time
+from io import TextIOWrapper
+from traceback import format_exc
+from typing import Iterable, Tuple
+
+DEFAULT_SLEEP = 1
+LOG_FILE = "/var/log/audit/audit.log"
+
+
+def follow_auditd_events() -> Iterable:
+    boot_time = None
+
+    # Get timestamp at which system booted to know from which point we should process events
+    with open("/proc/stat") as file:
+        for line in file:
+            if line.startswith("btime"):
+                boot_time = int(line.split()[1])
+                break
+
+    if not boot_time:
+        error = "Unable to find boot time"
+        raise ValueError(error)
+
+    # Record initial file size to detect if log rotates
+    log_size = os.stat(LOG_FILE).st_size
+    # Record initial file inode number to detect if log gets renamed
+    log_inode = os.stat(LOG_FILE).st_ino
+
+    logdata = open(LOG_FILE)
+
+    # Skip events that occured before boot
+    line = logdata.readline()
+    while line:
+        match = re.search(r"audit\((\d+)\.\d+:\d+\)", line)
+
+        if not match:
+            raise ValueError("Unable to parse auditd log entry: " + line)
+
+        timestamp = int(match.group(1))
+
+        if timestamp > boot_time:
+            # First event that occured after boot is found !
+            # We must stop skipping lines. But we still want to process this one.
+            # So we seek back before that line
+            logdata.seek(logdata.tell() - len(line))
+            break
+
+        line = logdata.readline()
+
+    while True:
+        logdata, log_inode, log_size = reopen_logfile_if_needed(
+            logdata,
+            log_inode,
+            log_size,
+        )
+
+        yield from logdata
+
+        time.sleep(DEFAULT_SLEEP)
+
+    logdata.close()
+
+
+def reopen_logfile_if_needed(
+    logdata: TextIOWrapper,
+    log_inode: int,
+    log_size: int,
+) -> Tuple[TextIOWrapper, int, int]:
+    retry = True
+
+    while retry:
+        try:
+            stat = os.stat(LOG_FILE)
+
+            # Reopen file if inode has changed, e.g. rename by logrotate
+            if stat.st_ino != log_inode:
+                logdata = open(LOG_FILE)
+                # Store new inode number for next comparisons
+                log_inode = stat.st_ino
+
+            # Start reading from the beginning if file shrank
+            if stat.st_size < log_size:
+                logdata.seek(0)
+                log_size = stat.st_size  # Reset file size value
+
+            # Record new file size if grown
+            if stat.st_size > log_size:
+                log_size = stat.st_size
+
+            retry = False
+        except FileNotFoundError:  # noqa: PERF203
+            time.sleep(DEFAULT_SLEEP)
+
+    return logdata, log_inode, log_size
+
+
+# Examples of logs to parse:
+# type=DAEMON_ROTATE msg=audit(1677959023.483:5737): op=rotate-logs auid=0 uid=0 ses=4294967295 pid=1 subj=unconfined res=successAUID="root" UID="root"
+# type=AVC msg=audit(1677959181.975:4): apparmor="STATUS" info="AppArmor Filesystem Enabled" pid=1 comm="swapper/0"
+# type=AVC msg=audit(1677959203.946:105): apparmor="STATUS" operation="profile_load" profile="unconfined" name="docker-default" pid=671 comm="apparmor_parser"
+# type=AVC msg=audit(1677959581.156:342): apparmor="DENIED" operation="open" profile="firefox" name="/home/shellcode/.dotfiles/.config/user-dirs.dirs" pid=1523 comm=46532042726F6B65722031363933 requested_mask="r" denied_mask="r" fsuid=1000 ouid=1000FSUID="shellcode" OUID="shellcode"
+# type=PROCTITLE msg=audit(1677959203.476:99): proctitle="(systemd)"
+# type=USER_START msg=audit(1677959203.479:100): pid=625 uid=0 auid=1000 ses=2 subj=unconfined msg='op=PAM:session_open grantors=pam_loginuid,pam_loginuid,pam_keyinit,pam_systemd_home,pam_limits,pam_unix,pam_permit,pam_mail,pam_systemd,pam_env acct="shellcode" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'UID="root" AUID="shellcode"
+def parse_auditd_entry(event: str) -> dict[str, str]:
+    log_entry = {}
+
+    # First we replace some parts of the entry for an easier split
+    event = event.replace("msg=audit(", "timestamp=")  # )
+    event = event.replace("msg='", "")
+    event = event.replace("'", "")
+    event = event.replace("", " ")  # enriched logs
+    index = event.find(":")
+
+    if index == -1:
+        error = "Unable to parse log entry"
+        raise ValueError(error)
+
+    event = f"{event[:index]} event_id={event[index+1:]}"
+
+    index = event.find(":")
+
+    if index == -1:
+        error = "Unable to parse log entry"
+        raise ValueError(error)
+
+    event = f"{event[:index-1]}{event[index+1:]}"
+
+    # Then we split spaces and equal signs to create a dict
+    tokens = event.split()
+
+    for token in tokens:
+        tokens = token.split("=", 1)
+
+        # Key has no value, ignoring it
+        if len(tokens) == 1:
+            continue
+
+        key, value = tokens
+        key = key.strip()
+        value = value.strip()
+
+        # Key or value is empty, ignoring it
+        if not key or not value:
+            continue
+
+        # Clean value if necessary
+        if (value[0] == '"' and value[-1] == '"') or (
+            value[0] == "'" and value[-1] == "'"
+        ):
+            value = value[1:-1]
+
+        log_entry[key] = value
+
+    return log_entry
+
+
+def notify(title: str, body: str) -> None:
+    # See /usr/local/bin/journalctl-notify
+    print("NOTIFY", json.dumps({"urgency": "critical", "title": title, "body": body}))
+
+
+# type=ANOM_ABEND msg=audit(1701614935.255:3933): auid=1000 uid=1000 gid=1000 ses=2 subj=unconfined pid=11602 comm="dunst" exe="/usr/bin/dunst" sig=5 res=1AUID="shellcode" UID="shellcode" GID="shellcode"
+#
+# For an explanation of record types, see:
+# https://access.redhat.com/articles/4409591
+
+
+# Examples of logs considered relevant
+# type=AVC msg=audit(1677959581.156:342): apparmor="DENIED" operation="open" profile="firefox" name="/home/shellcode/.dotfiles/.config/user-dirs.dirs" pid=1523 comm=46532042726F6B65722031363933 requested_mask="r" denied_mask="r" fsuid=1000 ouid=1000FSUID="shellcode" OUID="shellcode"
+# type=SECCOMP msg=audit(1701619501.959:5364): auid=1000 uid=1000 gid=1000 ses=1 subj=firejail-default//&unconfined pid=16904 comm="wget" exe="/usr/bin/wget" sig=0 arch=c000003e syscall=41 compat=0 ip=0x6c62ba930deb code=0x50000AUID="shellcode" UID="shellcode" GID="shellcode" ARCH=x86_64 SYSCALL=socket
+# type=ANOM_PROMISCUOUS msg=audit(1701697411.140:335): dev=wlan0 prom=256 old_prom=0 auid=1000 uid=0 gid=0 ses=1AUID="shellcode" UID="root" GID="root"
+def notify_if_relevant(log_entry: dict[str, str]) -> None:
+    if "apparmor" in log_entry and log_entry["apparmor"] == "DENIED":
+        title = "APPARMOR DENIAL"
+        body = (
+            f"Profile: {log_entry['profile']}\n"
+            f"Operation: {log_entry['operation']}\n"
+            f"On: {log_entry.get('name', 'unknown')}\n"
+            f"By: {log_entry.get('FSUID', 'unknown')}\n"
+            f"Denied: {log_entry.get(r'denied_mask', 'unknown')}"
+        )
+
+    elif log_entry["type"] == "SECCOMP" and "firejail" in log_entry["subj"]:
+        title = "FIREJAIL DENIAL (SECCOMP)"
+        body = (
+            f"Program: {log_entry['exe']}\n"
+            f"PID: {log_entry['pid']}\n"
+            f"User: {log_entry['AUID']}"
+        )
+
+    elif log_entry["type"] == "ANOM_ABEND" and "firejail" in log_entry["subj"]:
+        title = "PROGRAM CRASHED (COREDUMP)"
+        body = (
+            f"Program: {log_entry['exe']}\n"
+            f"PID: {log_entry['pid']}\n"
+            f"Signal: {log_entry['sig']}\n"
+            f"User: {log_entry['AUID']}"
+        )
+
+    elif log_entry["type"] == "ANOM_PROMISCUOUS" and log_entry["prom"] != "0":
+        title = "INTERFACE IN PROMISCUOUS MODE"
+        body = (
+            f"Inteface: {log_entry['dev']}\n"
+            f"User: {log_entry['AUID']}\n\n"
+            "Someone might be listening to your network traffic !"
+        )
+
+    elif log_entry["type"] == "USER_AUTH" and log_entry["res"] == "failed":
+        title = "AUTHENTICATION FAILURE"
+        body = (
+            f"From: {log_entry['UID']}\n"
+            f"Using: {log_entry['exe']}"
+        )
+
+    elif (
+        log_entry["type"] == "SYSCALL"
+        and log_entry["key"] == "etc_shadow"
+    ):
+        title = "SECRET FILE ACCESS"
+        body = (
+            f"Path: /etc/shadow\n"
+            f"From: {log_entry['AUID']}\n"
+            f"Using: {log_entry['exe']}\n"
+            f"Syscall: {log_entry['SYSCALL']}\n"
+            f"Success: {log_entry['success']}"
+        )
+
+    elif (
+        log_entry["type"] == "SYSCALL"
+        and log_entry["key"] == "secure_boot_keys"
+        and log_entry["exe"] not in ("/usr/bin/sbsign", "/usr/bin/find")
+    ):
+        title = "SECRET FILE ACCESS"
+        body = (
+            f"Path: /etc/arch-secure-boot/keys/\n"
+            f"From: {log_entry['AUID']}\n"
+            f"Using: {log_entry['exe']}\n"
+            f"Syscall: {log_entry['SYSCALL']}\n"
+            f"Success: {log_entry['success']}"
+        )
+
+    elif log_entry["type"] == "SYSCALL" and log_entry["key"] == "etc_ld_so_preload":
+        title = "ROOTKIT BEHAVIOR DETECTED"
+        body = (
+            f"Path: /etc/ld.so.preload\n"
+            f"From: {log_entry['AUID']}\n"
+            f"Using: {log_entry['exe']}\n"
+            f"Syscall: {log_entry['SYSCALL']}\n"
+            f"Success: {log_entry['success']}"
+        )
+
+    elif (
+        log_entry["type"] == "SYSCALL"
+        and log_entry["key"] == "auditd_tampering"
+        and log_entry["exe"] not in ("/usr/bin/pacman")
+    ):
+        title = "AUDITD TAMPERING"
+        body = (
+            f"From: {log_entry['AUID']}\n"
+            f"Using: {log_entry['exe']}\n"
+            f"Syscall: {log_entry['SYSCALL']}\n"
+            f"Success: {log_entry['success']}"
+        )
+
+    elif log_entry["type"] == "SYSCALL" and log_entry["key"] == "power_abuse":
+        title = "PRIVILEGED PROCESS USING HOME DIRECTORY"
+        body = (
+            f"From: {log_entry['AUID']}\n"
+            f"Using: {log_entry['exe']}\n"
+            f"Syscall: {log_entry['SYSCALL']}\n"
+            f"Success: {log_entry['success']}"
+        )
+
+    else:  # not considered relevant
+        return
+
+    notify(title, body)
+
+
+def main() -> None:
+    try:
+        for event in follow_auditd_events():
+            parsed_event = parse_auditd_entry(event)
+            notify_if_relevant(parsed_event)
+    except Exception:  # noqa: BLE001
+        notify("AUDITD LOGS MONITORING FAILURE", format_exc())
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

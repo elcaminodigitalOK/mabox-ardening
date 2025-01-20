@@ -1,0 +1,9 @@
+[Unit]
+Description=Run pacman-notify.service every day
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
